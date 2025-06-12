@@ -1,0 +1,16 @@
+# Debug Dockerfile for Cloud Run troubleshooting
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install minimal dependencies
+RUN pip install fastapi uvicorn
+
+# Copy only the debug app
+COPY main_debug.py .
+
+# Expose port
+EXPOSE 8080
+
+# Run the minimal application
+CMD ["python", "main_debug.py"]

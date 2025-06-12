@@ -1,0 +1,171 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    environment:
+      - USE_SQLITE=False
+      - POSTGRES_HOST=db
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=volitas
+      - REDIS_HOST=redis
+      - BACKEND_CORS_ORIGINS=["http://localhost:5173","http://localhost:4173","http://localhost:5174","http://localhost:5175","http://localhost:5176"]
+      # New auth environment variables
+      - ENVIRONMENT=development
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+      - FRONTEND_URL=http://localhost:5174
+    depends_on:
+      - db
+      - redis
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+  db:
+    image: postgres:14
+    volumes:
+      - ./db/postgres:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=volitas
+    ports:
+      - "5432:5432"
+    command:
+      - "postgres"
+      - "-c"
+      - "max_connections=200"
+      - "-c"
+      - "shared_buffers=256MB"
+      - "-c"
+      - "effective_cache_size=1GB"
+      - "-c"
+      - "work_mem=16MB"
+      - "-c"
+      - "maintenance_work_mem=64MB"
+      - "-c"
+      - "random_page_cost=1.1"
+      - "-c"
+      - "temp_file_limit=10GB"
+      - "-c"
+      - "log_min_duration_statement=200ms"
+      - "-c"
+      - "idle_in_transaction_session_timeout=10min"
+      - "-c"
+      - "lock_timeout=30s"
+      - "-c"
+      - "statement_timeout=5min"
+      - "-c"
+      - "shared_preload_libraries=pg_stat_statements"
+      - "-c"
+      - "pg_stat_statements.max=10000"
+      - "-c"
+      - "pg_stat_statements.track=all"
+      - "-c"
+      - "tcp_keepalives_idle=300"
+      - "-c"
+      - "tcp_keepalives_interval=30"
+      - "-c"
+      - "tcp_keepalives_count=3"
+      - "-c"
+      - "deadlock_timeout=5s"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - ./db/redis:/data
+
+  celery_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+    environment:
+      - USE_SQLITE=False
+      - POSTGRES_HOST=db
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=volitas
+      - REDIS_HOST=redis
+      # New auth environment variables for workers
+      - ENVIRONMENT=development
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+      - FRONTEND_URL=http://localhost:5174
+    depends_on:
+      - db
+      - redis
+    command: celery -A app.core.celery_app worker --loglevel=info -Q volitas,correlations --concurrency=1 --hostname=main_worker@%h
+
+  # Dedicated volume worker - handles only volume tasks
+  volume_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+    environment:
+      - USE_SQLITE=False
+      - POSTGRES_HOST=db
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=volitas
+      - REDIS_HOST=redis
+      - ENVIRONMENT=development
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+      - FRONTEND_URL=http://localhost:5174
+    depends_on:
+      - db
+      - redis
+    # Dedicated volume worker - only handles volume tasks
+    command: celery -A app.core.celery_app worker --loglevel=info -Q volume_queue --concurrency=1 --hostname=volume_worker@%h
+
+  celery_beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+    environment:
+      - USE_SQLITE=False
+      - POSTGRES_HOST=db
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=volitas
+      - REDIS_HOST=redis
+      # New auth environment variables for beat
+      - ENVIRONMENT=development
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+      - FRONTEND_URL=http://localhost:5174
+    depends_on:
+      - db
+      - redis
+      - celery_worker
+      - volume_worker
+    # Improved Celery Beat command with additional flags
+    command: >
+      celery -A app.core.celery_app beat 
+      --loglevel=info
+      --schedule=/app/celerybeat-schedule.db
+      --max-interval=300
+      --pidfile=/app/celerybeat.pid

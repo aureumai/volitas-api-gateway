@@ -1,1 +1,0 @@
-# volitas-api-gateway
